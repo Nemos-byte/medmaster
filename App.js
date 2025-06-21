@@ -206,7 +206,7 @@ export default function App() {
 
     // Handle multiple doses per day based on frequency
     const medications = [];
-    const baseDate = formData.startDate.toISOString().split('T')[0];
+    const baseDate = selectedDate.toISOString().split('T')[0];
     
     switch (formData.frequency) {
       case 'twice_daily':
@@ -424,9 +424,6 @@ export default function App() {
         {/* Scrollable Content */}
         <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
           <View style={styles.content}>
-            <Text style={styles.contentTitle}>
-              Pills for {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-            </Text>
 
             {/* Timeline */}
             {Object.keys(medicationsByTime).length > 0 ? (
@@ -494,9 +491,16 @@ export default function App() {
               </View>
             ) : (
               <View style={styles.emptyState}>
-                <Ionicons name="medical-outline" size={48} color="#D1D5DB" />
-                <Text style={styles.emptyTitle}>No medications scheduled</Text>
-                <Text style={styles.emptyMessage}>Add your first medication for this day</Text>
+                <Ionicons name="medical-outline" size={48} color="#9CA3AF" />
+                <Text style={styles.emptyStateTitle}>No medications scheduled</Text>
+                <Text style={styles.emptyStateSubtitle}>Add your first medication for this day</Text>
+                <TouchableOpacity 
+                  style={styles.addMedicationButton}
+                  onPress={() => setShowAddModal(true)}
+                >
+                  <Ionicons name="add" size={20} color="#8B5CF6" />
+                  <Text style={styles.addMedicationButtonText}>Add medication</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -1141,12 +1145,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 100, // Space for bottom navigation
   },
-  contentTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#111827',
-    marginBottom: 20,
-  },
   timeline: {
     gap: 20,
   },
@@ -1243,22 +1241,21 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   addMedicationButton: {
-    flex: 1,
-    height: 60,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    marginTop: 24,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
     borderWidth: 2,
+    borderColor: '#C7D2FE',
     borderStyle: 'dashed',
-    borderColor: '#9CA3AF',
-    gap: 12,
+    borderRadius: 16,
   },
   addMedicationText: {
+    color: '#8B5CF6',
     fontSize: 16,
-    color: '#6B7280',
-    fontWeight: '500',
+    fontWeight: '600',
+    marginLeft: 8,
   },
   addButton: {
     backgroundColor: '#7C3AED', // purple-600
@@ -1278,19 +1275,37 @@ const styles = StyleSheet.create({
   },
   emptyState: {
     alignItems: 'center',
-    paddingVertical: 40,
+    padding: 32,
+    marginTop: 32,
   },
-  emptyTitle: {
-    fontSize: 18,
+  emptyStateTitle: {
+    fontSize: 20,
     fontWeight: '600',
-    color: '#6B7280',
+    color: '#374151',
     marginTop: 16,
-    marginBottom: 8,
   },
-  emptyMessage: {
+  emptyStateSubtitle: {
     fontSize: 16,
-    color: '#9CA3AF',
-    marginBottom: 24,
+    color: '#6B7280',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  addMedicationButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 24,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderWidth: 2,
+    borderColor: '#C7D2FE',
+    borderStyle: 'dashed',
+    borderRadius: 16,
+  },
+  addMedicationButtonText: {
+    color: '#8B5CF6',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
   },
   bottomNav: {
     position: 'absolute',
