@@ -28,7 +28,7 @@ const mockMedications = [
 ];
 
 export default function App() {
-  const [selectedDate, setSelectedDate] = useState(new Date(2024, 2, 24)); // March 24, 2024
+  const [selectedDate, setSelectedDate] = useState(new Date()); // March 24, 2024
   const [medications, setMedications] = useState(mockMedications);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showManualForm, setShowManualForm] = useState(false);
