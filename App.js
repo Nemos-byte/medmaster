@@ -152,21 +152,34 @@ export default function App() {
     return `${displayHour}:${minutes.padStart(2, '0')} ${ampm}`;
   };
 
+  const weekDays = getWeekDays();
+
   const getWeekRange = () => {
-    const weekDays = getWeekDays();
     const startDate = weekDays[0];
     const endDate = weekDays[6];
 
-    if (startDate.getMonth() === endDate.getMonth()) {
-      return startDate.toLocaleDateString("en-US", { month: "long", day: "numeric" });
-    }
+    const startMonth = startDate.toLocaleDateString("en-US", { month: "short" });
+    const endMonth = endDate.toLocaleDateString("en-US", { month: "short" });
 
-    const startMonth = startDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    const endMonth = endDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    return `${startMonth} - ${endMonth}`;
+    if (startMonth === endMonth) {
+      // e.g. "June 15 - 21"
+      return `${startDate.toLocaleDateString("en-US", {
+        month: "long",
+      })} ${startDate.getDate()} - ${endDate.getDate()}`;
+    } else {
+      // e.g. "Mar 31 - Apr 6"
+      const startFormat = startDate.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+      const endFormat = endDate.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+      return `${startFormat} - ${endFormat}`;
+    }
   };
 
-  const weekDays = getWeekDays();
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const todayMedications = getMedicationsForDate(selectedDate);
 
@@ -818,7 +831,7 @@ export default function App() {
                    >
                      <Ionicons name="calendar-outline" size={20} color="#6B7280" />
                      <Text style={styles.dateButtonText}>
-                       {formData.startDate.toLocaleDateString('en-US', { 
+                       {selectedDate.toLocaleDateString('en-US', { 
                          weekday: 'long', 
                          month: 'long', 
                          day: 'numeric' 
@@ -839,16 +852,16 @@ export default function App() {
                            key={index}
                            style={[
                              styles.dropdownOption,
-                             date.toDateString() === formData.startDate.toDateString() && styles.selectedDropdownOption
+                             date.toDateString() === selectedDate.toDateString() && styles.selectedDropdownOption
                            ]}
                            onPress={() => {
-                             setFormData(prev => ({...prev, startDate: date}));
+                             setSelectedDate(date);
                              setShowDateDropdown(false);
                            }}
                          >
                            <Text style={[
                              styles.dropdownOptionText,
-                             date.toDateString() === formData.startDate.toDateString() && styles.selectedDropdownOptionText
+                             date.toDateString() === selectedDate.toDateString() && styles.selectedDropdownOptionText
                            ]}>
                              {date.toLocaleDateString('en-US', { 
                                weekday: 'long', 
