@@ -8,7 +8,7 @@ try {
   console.log('AsyncStorage not available, scan history will not be persisted');
 }
 
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+  const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 
 // Safe date handling utility
 const getSafeDate = (dateInput) => {
@@ -176,39 +176,52 @@ const recognizeMedicinePackage = async (base64ImageData) => {
   
   const today = new Date().toISOString().slice(0, 10);
   
-  const prompt = `Analyze this image of a medicine package and extract the medicine information.
+  const prompt = `
+You are a precise medical data extraction AI. Your only function is to analyze the image of a single medication package and return a structured JSON object.
 
-🎯 TASK: Extract medication details and create a treatment schedule
+**CRITICAL PROCESSING RULES:**
+1.  **REQUIRED FIELDS:** You **MUST** identify the \`medicineName\` and \`dosage\`. These fields cannot be null.
+    *   If the medicine name is unclear or not visible, use the placeholder "Unknown Medication".
+    *   If the dosage is unclear or not visible, use the placeholder "1 dose".
+2.  **OUTPUT FORMAT:** Your response **MUST BE A VALID JSON ARRAY** containing a single object. Do not include any other text, explanations, or markdown formatting like \`\`\`json.
+3.  **COLOR:** Identify the dominant color of the packaging.
 
-Look for:
-1. Medicine name (e.g., "Piriteze", "DEXAMETHASONE", "AMOXICILLIN")
-2. Dosage/strength (e.g., "10mg", "4mg", "500mg tablet")
-3. Duration instructions (e.g., "daily for 14 days", "twice daily for 5 days", "take for 1 week")
-4. Frequency instructions (e.g., "once daily", "twice daily", "morning and evening")
-5. Package color - identify the dominant color of the packaging (e.g., "red", "blue", "green", "orange", "purple", "pink", "yellow", "white")
-
-📋 OUTPUT FORMAT:
-Return a JSON array with ONE object per medication dose. Each object represents a single dose on a single day.
-
-For "Piriteze 10mg once daily for 14 days":
-- Create EXACTLY 14 objects (one for each day)
-- Use today's date (${today}) as the start date
-- Each entry should have consecutive dates
-
-Example output structure:
+**JSON OBJECT STRUCTURE:**
+\`\`\`json
 [
   {
-    "medicineName": "Piriteze",
-    "dosage": "10mg tablet",
+    "medicineName": "string",
+    "dosage": "string",
     "frequencyPerDay": 1,
     "intakeTimes": ["morning"],
-    "durationDays": 14,
+    "durationDays": 1,
     "startDate": "${today}",
     "endDate": "${today}",
-    "notes": "Take once daily for 14 days (Day 1 of 14)",
-    "packageColor": "red"
+    "notes": "string",
+    "packageColor": "string"
   }
-]`;
+]
+\`\`\`
+
+**EXAMPLE:**
+- Image shows a red box of "Piriteze 10mg tablets".
+- Expected JSON output:
+  \`\`\`json
+  [
+    {
+      "medicineName": "Piriteze",
+      "dosage": "10mg tablet",
+      "frequencyPerDay": 1,
+      "intakeTimes": ["morning"],
+      "durationDays": 1,
+      "startDate": "${today}",
+      "endDate": "${today}",
+      "notes": "Scanned from package.",
+      "packageColor": "red"
+    }
+  ]
+  \`\`\`
+`;
 
   try {
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
@@ -373,7 +386,7 @@ Example output structure:
       }));
       
       console.log(`📦 Package scan: Found ${parsedResult.length} medication entries`);
-      return parsedResult;
+    return parsedResult;
       
     } else {
       console.error('Unexpected API response structure:', response.data);

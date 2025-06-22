@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, SafeAreaView, StatusBar, Modal, TextInput, Alert, Animated } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,35 +9,34 @@ import { ConfirmScheduleModal } from './components/ConfirmScheduleModal';
 import { VoiceSchedulerModal } from './components/VoiceSchedulerModal';
 import { EditMedicationModal } from './components/EditMedicationModal';
 import { MedicationOverview } from './components/MedicationOverview';
+import { NotificationBell } from './components/NotificationBell';
+import { NotificationCenter } from './components/NotificationCenter';
 import { getSoftCardColor } from './utils/colorUtils';
-
-// Sample medication data to match the screenshot
-const mockMedications = [
-  {
-    id: "1",
-    name: "Omega 3",
-    dosage: "1 pill",
-    time: "08:00",
-    taken: false,
-    date: "2024-03-24",
-    cardColor: "#FFFFFF",
-  },
-  {
-    id: "2",
-    name: "Vitamin B12",
-    dosage: "1 pill",
-    time: "09:00",
-    taken: false,
-    date: "2024-03-24",
-    notes: "Take on an empty stomach",
-    cardColor: "#F0FDFA", // teal background like in screenshot
-  },
-];
+import { initializeNotifications, notificationService } from './services/notificationService';
+import { storageService, initializeStorage, getAllMedications, deleteMedication } from './services/storageService';
+import { useMedicationManager } from './hooks/useStorage';
+// Sample data is now managed through DataManagement component
+import DataManagement from './components/DataManagement';
 
 export default function App() {
-  const [selectedDate, setSelectedDate] = useState(new Date()); // March 24, 2024
-  const [medications, setMedications] = useState(mockMedications);
+  const [selectedDate, setSelectedDate] = useState(new Date());
   const [showAddModal, setShowAddModal] = useState(false);
+  const [storageInitialized, setStorageInitialized] = useState(false);
+  
+  // Use the medication manager hook for data management
+  const {
+    medications,
+    activeMedications,
+    loading: medicationsLoading,
+    error: medicationsError,
+    addMedication,
+    updateMedication,
+    deleteMedication,
+    markDoseTaken,
+    markDoseSkipped,
+    markDoseMissed,
+    refetch: refetchMedications
+  } = useMedicationManager();
   const [showManualForm, setShowManualForm] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -60,6 +59,63 @@ export default function App() {
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [selectedMedication, setSelectedMedication] = useState(null);
   const [showMedicationOverview, setShowMedicationOverview] = useState(false);
+  const [showNotificationCenter, setShowNotificationCenter] = useState(false);
+  const [showDataManagement, setShowDataManagement] = useState(false);
+
+  // Initialize storage and notifications when app loads
+  useEffect(() => {
+    const initializeApp = async () => {
+      try {
+        console.log('🚀 Initializing app...');
+        
+        // Initialize storage first
+        await initializeStorage();
+        console.log('✅ Storage initialized successfully');
+        
+        // Clean up any invalid medications
+        await cleanupInvalidMedications();
+        
+        // Initialize notifications
+        await initializeNotifications();
+        console.log('✅ Notifications initialized successfully');
+        
+        setStorageInitialized(true);
+        console.log('🎉 App initialization completed');
+      } catch (error) {
+        console.error('❌ Failed to initialize app:', error);
+        // Still allow the app to work without storage
+        setStorageInitialized(true);
+      }
+    };
+
+    initializeApp();
+  }, []);
+
+  // Clean up medications with invalid names
+  const cleanupInvalidMedications = async () => {
+    try {
+      const allMedications = await getAllMedications();
+      if (!allMedications || allMedications.length === 0) return;
+      
+      const invalidMedications = allMedications.filter(med => {
+        const name = med.name || med.medicineName;
+        return !name || name === 'null' || name === 'undefined' || name.trim() === '';
+      });
+      
+      if (invalidMedications.length > 0) {
+        console.log(`🧹 Found ${invalidMedications.length} invalid medications, cleaning up...`);
+        
+        for (const invalidMed of invalidMedications) {
+          await deleteMedication(invalidMed.id);
+          console.log(`🗑️ Deleted invalid medication: ${invalidMed.id}`);
+        }
+        
+        console.log('✅ Invalid medications cleaned up');
+      }
+    } catch (error) {
+      console.error('❌ Error cleaning up invalid medications:', error);
+    }
+  };
 
   // Predefined time slots
   const timeSlots = [
@@ -110,26 +166,117 @@ export default function App() {
   ];
 
   // Medication management functions
-  const toggleMedication = (id) => {
-    setMedications(prev =>
-      prev.map((med) => {
-        if (med.id === id) {
-          const updatedMed = { ...med, taken: !med.taken };
-          if (updatedMed.taken) {
-            updatedMed.takenAt = new Date().toISOString();
+  const toggleMedication = async (id) => {
+    try {
+      console.log('🔄 Toggling medication:', id);
+      
+      // Find the medication in the transformed list
+      const todayMeds = getMedicationsForDate(selectedDate);
+      const medication = todayMeds.find(med => med.id === id);
+      
+      if (!medication) {
+        console.warn('Medication not found:', id);
+        return;
+      }
+
+      const today = new Date().toISOString().split('T')[0];
+      const scheduledTime = new Date(`${today}T${medication.schedule?.time || '09:00'}:00`).toISOString();
+
+      if (medication.taken) {
+        // Mark as not taken - update the medication directly
+        await updateMedication(id, { 
+          taken: false, 
+          takenAt: null,
+          lastModified: new Date().toISOString()
+        });
+        console.log('✅ Medication marked as not taken');
           } else {
-            delete updatedMed.takenAt;
-          }
-          return updatedMed;
+        // Mark as taken - record dose and update medication
+        await markDoseTaken(id, scheduledTime, 'Marked as taken from daily view');
+        await updateMedication(id, { 
+          taken: true, 
+          takenAt: new Date().toISOString(),
+          lastModified: new Date().toISOString()
+        });
+        console.log('✅ Medication marked as taken');
+      }
+
+      // Check if all medications for today are completed
+      const allCompleted = todayMeds.length > 0 && todayMeds.every(med => 
+        med.id === id ? !med.taken : med.taken // Toggle the current one
+      );
+
+      // Send achievement notification if all medications completed
+      if (allCompleted && !medication.taken) {
+        try {
+          await notificationService.sendAchievementNotification(
+            "All medications taken today! Keep up the great work! 🎉",
+            "daily_complete"
+          );
+        } catch (error) {
+          console.error('Error sending achievement notification:', error);
         }
-        return med;
-      }),
-    );
+      }
+
+      // Refresh medications
+      await refetchMedications();
+    } catch (error) {
+      console.error('❌ Error toggling medication:', error);
+      Alert.alert('Error', 'Failed to update medication. Please try again.');
+    }
   };
 
   const getMedicationsForDate = (date) => {
     const dateString = date.toISOString().split("T")[0];
-    return medications.filter((med) => med.date === dateString).sort((a, b) => a.time.localeCompare(b.time));
+    
+    // Filter medications that are active and scheduled for this date
+    const filteredMeds = activeMedications.filter((med) => {
+      // Check if medication has a specific date or if it's a daily medication
+      if (med.date === dateString) return true;
+      
+      // Check if it's a daily medication that should appear today
+      if (med.schedule?.frequency?.type === 'daily') {
+        const startDate = new Date(med.schedule.startDate);
+        const endDate = med.schedule.endDate ? new Date(med.schedule.endDate) : null;
+        const currentDate = new Date(dateString);
+        
+        return currentDate >= startDate && (!endDate || currentDate <= endDate);
+      }
+      
+      return false;
+    }).sort((a, b) => {
+      const timeA = a.time || (a.schedule?.frequency?.specificTimes?.[0] || '09:00');
+      const timeB = b.time || (b.schedule?.frequency?.specificTimes?.[0] || '09:00');
+      return timeA.localeCompare(timeB);
+    });
+
+    // Transform medications to ensure proper UI display format
+    return filteredMeds.map(med => {
+      // Handle both old and new data structures
+      const medicationName = med.name || med.medicineName || 'Unknown medication';
+      const medicationDosage = med.dosage || 'Unknown dosage';
+      const medicationTime = med.time || (med.schedule?.frequency?.specificTimes?.[0] || '09:00');
+      const medicationColor = med.cardColor || med.appearance?.color || '#7C3AED';
+      
+      // Skip medications with null/invalid names
+      if (!medicationName || medicationName === 'null' || medicationName === 'undefined' || medicationName === 'Unknown medication' || medicationName.trim() === '') {
+        return null;
+      }
+      
+      return {
+        ...med,
+        // Ensure we have the required fields for UI display
+        id: med.id,
+        name: medicationName,
+        dosage: medicationDosage,
+        time: medicationTime,
+        cardColor: medicationColor,
+        taken: med.taken || false,
+        notes: med.notes || '',
+        // Keep original data for storage operations
+        originalData: med
+      };
+    }).filter(Boolean); // Remove null entries
   };
 
   // Generate week days around selected date
@@ -172,7 +319,7 @@ export default function App() {
     return `${displayHour}:${minutes.padStart(2, '0')} ${ampm}`;
   };
 
-  const weekDays = getWeekDays();
+    const weekDays = getWeekDays();
 
   const getWeekRange = () => {
     const startDate = weekDays[0];
@@ -315,12 +462,12 @@ export default function App() {
           </View>
           
           {/* Card content */}
-          <View style={[styles.medicationCard, { backgroundColor: medication.cardColor }]}>
+          <View style={[styles.medicationCard, { backgroundColor: medication.cardColor || medication.appearance?.color || '#7C3AED' }]}>
             <View style={styles.medicationContent}>
               <View style={styles.medicationInfo}>
                 <View style={styles.medicationDetails}>
-                  <Text style={styles.dosage}>{medication.dosage}</Text>
-                  <Text style={styles.medicationName}>{medication.name}</Text>
+                  <Text style={styles.medicationName}>{medication.name || 'Unknown medication'}</Text>
+                  <Text style={styles.dosage}>{medication.dosage || 'Unknown dosage'}</Text>
                   {medication.notes && (
                     <Text style={styles.notes}>{medication.notes}</Text>
                   )}
@@ -352,7 +499,7 @@ export default function App() {
     );
   };
 
-  const addNewMedication = () => {
+  const addNewMedication = async () => {
     if (!formData.name.trim() || !formData.dosage.trim()) {
       alert('Please fill in medication name and dosage');
       return;
@@ -435,8 +582,37 @@ export default function App() {
       };
     }
 
-    // Add all medications to the list
-    setMedications(prev => [...prev, ...medications]);
+    // Add all medications to the storage
+    try {
+      for (const medication of medications) {
+        const medicationData = {
+          name: medication.name,
+          dosage: medication.dosage,
+          notes: medication.notes || '',
+          schedule: {
+            frequency: {
+              type: 'daily',
+              specificTimes: [medication.time]
+            },
+            startDate: medication.date,
+            endDate: medication.date // Single day entry
+          },
+          appearance: {
+            color: medication.cardColor || '#7C3AED',
+            shape: 'round'
+          }
+        };
+        
+        await addMedication(medicationData);
+      }
+      
+      // Refresh medications list
+      await refetchMedications();
+      
+      console.log('✅ Added medications to storage successfully');
+    } catch (error) {
+      console.error('❌ Error adding medications to storage:', error);
+    }
     
     // Reset form
     setFormData({
@@ -479,103 +655,116 @@ export default function App() {
       setIsConfirmModalVisible(true);
     } else {
       // Legacy single package scan - pre-fill the form
-      setFormData(prev => ({
-        ...prev,
+    setFormData(prev => ({
+      ...prev,
         name: scannedData.name || scannedData.medicineName || '',
-        dosage: scannedData.dosage || '',
+      dosage: scannedData.dosage || '',
         notes: scannedData.quantity ? `Quantity: ${scannedData.quantity}` : (scannedData.notes || ''),
         pillColor: scannedData.packageColor || prev.pillColor,
-      }));
-      setShowManualForm(true);
+    }));
+    setShowManualForm(true);
     }
   };
 
-  const handleConfirmAndAdd = (confirmedMedicines) => {
-    const newMedications = [];
+  const handleConfirmAndAdd = async (confirmedMedicines) => {
+    try {
+      console.log('📝 Adding confirmed medications to storage:', confirmedMedicines.length);
+      let addedCount = 0;
 
-    confirmedMedicines.forEach(med => {
-      // Check if this is already an individual daily entry
-      const isAlreadyDailyEntry = med.notes && med.notes.includes("Day ") && med.notes.includes(" of ");
-      
-      if (isAlreadyDailyEntry) {
-        // This is already a daily entry, add it directly without expansion
-        if (Array.isArray(med.intakeTimes) && med.intakeTimes.length > 0) {
-          med.intakeTimes.forEach(time => {
-            newMedications.push({
-              id: `${Date.now()}-${Math.random()}`,
-              name: med.medicineName,
-              dosage: med.dosage,
-              time: time,
-              taken: false,
-              date: med.startDate, // Use the specific date from the daily entry
+      for (const med of confirmedMedicines) {
+        try {
+          // Check if this is already an individual daily entry
+          const isAlreadyDailyEntry = med.notes && med.notes.includes("Day ") && med.notes.includes(" of ");
+          
+          if (isAlreadyDailyEntry) {
+            // This is already a daily entry, add it directly
+            const medicationName = med.medicineName || med.name;
+            if (!medicationName || medicationName === 'null' || medicationName === 'undefined' || medicationName.trim() === '') {
+              console.warn('❌ Skipping medication with invalid name:', med);
+              continue;
+            }
+            
+            const medicationData = {
+              name: medicationName,
+              dosage: med.dosage || '1 dose', // <-- FIX: Added fallback
               notes: med.notes || '',
-              cardColor: med.packageColor ? getSoftCardColor(med.packageColor) : '#FFFFFF',
-              pillColor: med.packageColor || formData.pillColor,
-            });
-          });
-        }
-      } else {
-        // This is a summary entry, expand it for its entire duration
-        // Enhanced date validation and fallback logic
-        let startDate;
-        
-        // Try to use the medication's start date
-        if (med.startDate) {
-          startDate = new Date(med.startDate);
-          if (isNaN(startDate.getTime())) {
-            console.warn('Invalid medication start date, using today:', med.startDate);
-            startDate = null;
+              schedule: {
+                frequency: {
+                  type: 'daily',
+                  specificTimes: med.intakeTimes || ['morning']
+                },
+                startDate: med.startDate,
+                endDate: med.startDate // Single day entry
+              },
+              appearance: {
+                color: med.packageColor || '#7C3AED',
+                shape: 'round'
+              }
+            };
+            
+            await addMedication(medicationData);
+            addedCount++;
+          } else {
+            // This is a summary entry, add as a multi-day medication
+            let startDate = new Date();
+            
+            // Try to use the medication's start date
+            if (med.startDate) {
+              const testDate = new Date(med.startDate);
+              if (!isNaN(testDate.getTime())) {
+                startDate = testDate;
+              }
+            }
+            
+            // Calculate end date
+            const endDate = new Date(startDate);
+            endDate.setDate(startDate.getDate() + (med.durationDays || 1) - 1);
+            
+            const medicationName = med.medicineName || med.name;
+            if (!medicationName || medicationName === 'null' || medicationName === 'undefined' || medicationName.trim() === '') {
+              console.warn('❌ Skipping medication with invalid name:', med);
+              continue;
+            }
+            
+            const medicationData = {
+              name: medicationName,
+              dosage: med.dosage || '1 dose', // <-- FIX: Added fallback
+              notes: med.notes || '',
+              schedule: {
+                frequency: {
+                  type: 'daily',
+                  specificTimes: med.intakeTimes || ['morning']
+                },
+                startDate: startDate.toISOString().split('T')[0],
+                endDate: endDate.toISOString().split('T')[0]
+              },
+              appearance: {
+                color: med.packageColor || '#7C3AED',
+                shape: 'round'
+              }
+            };
+            
+            await addMedication(medicationData);
+            addedCount++;
           }
-        }
-        
-        // Fallback to today if no valid start date
-        if (!startDate) {
-          console.log('Using today as start date for medication:', med.medicineName);
-          startDate = new Date();
-        }
-        
-        // Double-check the final date is valid
-        if (isNaN(startDate.getTime())) {
-          console.error('Critical error: could not create valid start date, skipping medication');
-          return;
-        }
-        
-        for (let i = 0; i < (med.durationDays || 1); i++) {
-          // Safer way to add days - use milliseconds
-          const date = new Date(startDate.getTime() + (i * 24 * 60 * 60 * 1000));
-          
-          // Validate the calculated date
-          if (isNaN(date.getTime())) {
-            console.warn(`Invalid date calculated for day ${i}, skipping`);
-            continue;
-          }
-          
-          const dateString = date.toISOString().split('T')[0];
-          
-          // Add a dose for each intake time
-          if (Array.isArray(med.intakeTimes) && med.intakeTimes.length > 0) {
-            med.intakeTimes.forEach(time => {
-              newMedications.push({
-                id: `${Date.now()}-${Math.random()}`,
-                name: med.medicineName,
-                dosage: med.dosage,
-                time: time,
-                taken: false,
-                date: dateString,
-                notes: med.notes || '',
-                cardColor: med.packageColor ? getSoftCardColor(med.packageColor) : '#FFFFFF',
-                pillColor: med.packageColor || formData.pillColor,
-              });
-            });
-          }
+        } catch (error) {
+          console.error('Error adding individual medication:', error);
         }
       }
-    });
-
-    setMedications(prev => [...prev, ...newMedications]);
-    setIsConfirmModalVisible(false);
-    setScannedPrescription(null);
-    Alert.alert('Success', `${newMedications.length} medication doses have been added to your calendar.`);
+      
+      // Refresh medications list
+      await refetchMedications();
+      
+      setIsConfirmModalVisible(false);
+      setScannedPrescription(null);
+      
+      Alert.alert('Success', `${addedCount} medication${addedCount === 1 ? '' : 's'} added to your schedule!`);
+      
+      console.log('✅ Successfully added medications to storage');
+    } catch (error) {
+      console.error('❌ Error adding confirmed medications:', error);
+      Alert.alert('Error', 'Failed to add medications. Please try again.');
+    }
   };
 
   const handleVoiceSchedule = (data) => {
@@ -594,23 +783,46 @@ export default function App() {
     setIsEditModalVisible(true);
   };
 
-  const handleUpdateMedication = (updatedMedication) => {
-    setMedications(prev => 
-      prev.map(med => 
-        med.id === updatedMedication.id ? updatedMedication : med
-      )
-    );
-    Alert.alert('Success', 'Medication updated successfully!');
+  const handleUpdateMedication = async (updatedMedication) => {
+    try {
+      if (!updatedMedication || !updatedMedication.id) {
+        Alert.alert('Error', 'Invalid medication data provided for update.');
+        return;
+      }
+      
+      const { id, ...updates } = updatedMedication;
+      
+      await updateMedication(id, updates);
+      
+      // Close the modal and refresh the list
+      setIsEditModalVisible(false);
+      await refetchMedications();
+      
+      Alert.alert('Success', 'Medication updated successfully!');
+    } catch (error) {
+      console.error('Error updating medication:', error);
+      Alert.alert('Error', 'Failed to update medication');
+    }
   };
 
-  const handleDeleteMedication = (medicationId) => {
-    setMedications(prev => prev.filter(med => med.id !== medicationId));
-    Alert.alert('Success', 'Medication deleted successfully!');
+  const handleDeleteMedication = async (medicationId) => {
+    try {
+      // Cancel notifications for this medication
+      await notificationService.cancelNotificationsForMedication(medicationId);
+      console.log('🗑️ Cancelled notifications for deleted medication');
+      
+      // Delete from storage
+      await deleteMedication(medicationId);
+      Alert.alert('Success', 'Medication deleted successfully!');
+    } catch (error) {
+      console.error('Error deleting medication:', error);
+      Alert.alert('Error', 'Failed to delete medication');
+    }
   };
 
   // Show medication overview if requested
   if (showMedicationOverview) {
-    return (
+  return (
       <MedicationOverview 
         medications={medications}
         onBack={() => setShowMedicationOverview(false)}
@@ -624,7 +836,7 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#E5E7EB" />
       <LinearGradient colors={['#E5E7EB', '#F3F4F6']} style={styles.gradient}>
         
@@ -635,8 +847,15 @@ export default function App() {
               <Ionicons name="arrow-back" size={24} color="#374151" />
             </TouchableOpacity>
             <View style={styles.topNavRight}>
-              <TouchableOpacity style={styles.iconButton}>
-                <Ionicons name="notifications-outline" size={24} color="#374151" />
+              <NotificationBell 
+                onPress={() => setShowNotificationCenter(true)}
+                style={styles.iconButton}
+              />
+              <TouchableOpacity 
+                style={styles.iconButton}
+                onPress={() => setShowDataManagement(true)}
+              >
+                <Ionicons name="server-outline" size={24} color="#374151" />
               </TouchableOpacity>
               <TouchableOpacity style={styles.iconButton}>
                 <Ionicons name="settings-outline" size={24} color="#374151" />
@@ -692,26 +911,26 @@ export default function App() {
                         </View>
                       )}
                       {/* Day Button */}
-                      <TouchableOpacity
-                        style={[
-                          styles.dayButton,
+                    <TouchableOpacity
+                      style={[
+                        styles.dayButton,
                           dayTotalCount > 0 && !isSelected && styles.dayButtonWithProgress,
                           isToday && !isSelected && styles.todayDay,
-                          isSelected && styles.selectedDay,
-                        ]}
-                        onPress={() => setSelectedDate(date)}
-                      >
-                        <Text
-                          style={[
-                            styles.dayNumber,
+                        isSelected && styles.selectedDay,
+                      ]}
+                      onPress={() => setSelectedDate(date)}
+                    >
+                      <Text
+                        style={[
+                          styles.dayNumber,
                             isToday && !isSelected && styles.todayDayText,
-                            isSelected && styles.selectedDayText,
-                          ]}
-                        >
-                          {date.getDate()}
-                        </Text>
-                        {isSelected && <View style={styles.selectedDot} />}
-                      </TouchableOpacity>
+                          isSelected && styles.selectedDayText,
+                        ]}
+                      >
+                        {date.getDate()}
+                      </Text>
+                      {isSelected && <View style={styles.selectedDot} />}
+                    </TouchableOpacity>
                     </View>
                     {/* Today label */}
                     {isToday && (
@@ -945,14 +1164,14 @@ export default function App() {
                   </View>
                 </TouchableOpacity>
 
-                {/* Manual Input Option */}
-                <TouchableOpacity 
-                  style={[styles.optionCard, styles.manualOption]}
-                  onPress={() => {
-                    setShowAddModal(false);
-                    setShowManualForm(true);
-                  }}
-                >
+                                 {/* Manual Input Option */}
+                 <TouchableOpacity 
+                   style={[styles.optionCard, styles.manualOption]}
+                   onPress={() => {
+                     setShowAddModal(false);
+                     setShowManualForm(true);
+                   }}
+                 >
                   <View style={styles.optionContent}>
                     <View style={[styles.optionIcon, styles.manualIcon]}>
                       <Ionicons name="create" size={24} color="#FFFFFF" />
@@ -968,358 +1187,358 @@ export default function App() {
                 </TouchableOpacity>
               </View>
             </View>
-          </View>
-        </Modal>
+                     </View>
+         </Modal>
 
-        {/* Manual Input Form Modal */}
-        <Modal
-          visible={showManualForm}
-          transparent={true}
-          animationType="slide"
-          onRequestClose={() => setShowManualForm(false)}
-        >
-          <View style={styles.formModalOverlay}>
-            <View style={styles.formModalContainer}>
-              {/* Header */}
-              <View style={styles.formHeader}>
-                <TouchableOpacity 
-                  onPress={() => {
-                    setShowManualForm(false);
-                    setShowDateDropdown(false);
-                    setShowFrequencyDropdown(false);
-                  }}
-                  style={styles.backButton}
-                >
-                  <Ionicons name="arrow-back" size={24} color="#374151" />
-                </TouchableOpacity>
-                <Text style={styles.formTitle}>Add New Medication</Text>
-                <View style={styles.headerSpacer} />
-              </View>
+         {/* Manual Input Form Modal */}
+         <Modal
+           visible={showManualForm}
+           transparent={true}
+           animationType="slide"
+           onRequestClose={() => setShowManualForm(false)}
+         >
+           <View style={styles.formModalOverlay}>
+             <View style={styles.formModalContainer}>
+               {/* Header */}
+               <View style={styles.formHeader}>
+                 <TouchableOpacity 
+                   onPress={() => {
+                     setShowManualForm(false);
+                     setShowDateDropdown(false);
+                     setShowFrequencyDropdown(false);
+                   }}
+                   style={styles.backButton}
+                 >
+                   <Ionicons name="arrow-back" size={24} color="#374151" />
+                 </TouchableOpacity>
+                 <Text style={styles.formTitle}>Add New Medication</Text>
+                 <View style={styles.headerSpacer} />
+               </View>
 
-              <ScrollView style={styles.formContent} showsVerticalScrollIndicator={false}>
-                {/* Medication Name */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>
-                    Medication Name <Text style={styles.required}>*</Text>
-                  </Text>
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Enter medication name"
-                    value={formData.name}
-                    onChangeText={(text) => setFormData(prev => ({...prev, name: text}))}
-                  />
-                </View>
+               <ScrollView style={styles.formContent} showsVerticalScrollIndicator={false}>
+                 {/* Medication Name */}
+                 <View style={styles.formGroup}>
+                   <Text style={styles.formLabel}>
+                     Medication Name <Text style={styles.required}>*</Text>
+                   </Text>
+                   <TextInput
+                     style={styles.textInput}
+                     placeholder="Enter medication name"
+                     value={formData.name}
+                     onChangeText={(text) => setFormData(prev => ({...prev, name: text}))}
+                   />
+                 </View>
 
-                {/* Dosage */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>
-                    Dosage <Text style={styles.required}>*</Text>
-                  </Text>
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="e.g., 1 tablet, 5mg, 2 capsules"
-                    value={formData.dosage}
-                    onChangeText={(text) => setFormData(prev => ({...prev, dosage: text}))}
-                  />
-                </View>
+                 {/* Dosage */}
+                 <View style={styles.formGroup}>
+                   <Text style={styles.formLabel}>
+                     Dosage <Text style={styles.required}>*</Text>
+                   </Text>
+                   <TextInput
+                     style={styles.textInput}
+                     placeholder="e.g., 1 tablet, 5mg, 2 capsules"
+                     value={formData.dosage}
+                     onChangeText={(text) => setFormData(prev => ({...prev, dosage: text}))}
+                   />
+                 </View>
 
-                {/* Pill Color */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Pill Color</Text>
-                  <View style={styles.colorGrid}>
-                    {pillColors.map((color, index) => (
-                      <TouchableOpacity
-                        key={index}
-                        style={[
-                          styles.colorOption,
-                          { backgroundColor: color },
-                          formData.pillColor === color && styles.selectedColor
-                        ]}
-                        onPress={() => setFormData(prev => ({...prev, pillColor: color}))}
-                      />
-                    ))}
-                  </View>
-                </View>
+                 {/* Pill Color */}
+                 <View style={styles.formGroup}>
+                   <Text style={styles.formLabel}>Pill Color</Text>
+                   <View style={styles.colorGrid}>
+                     {pillColors.map((color, index) => (
+                       <TouchableOpacity
+                         key={index}
+                         style={[
+                           styles.colorOption,
+                           { backgroundColor: color },
+                           formData.pillColor === color && styles.selectedColor
+                         ]}
+                         onPress={() => setFormData(prev => ({...prev, pillColor: color}))}
+                       />
+                     ))}
+                   </View>
+                 </View>
 
-                {/* When to take - Only show for single dose frequencies */}
-                {!['twice_daily', 'three_times_daily', 'four_times_daily', 'with_meals', 'before_meals', 'at_bedtime'].includes(formData.frequency) && (
-                  <View style={styles.formGroup}>
-                    <Text style={styles.formLabel}>
-                      When do you want to take it? <Text style={styles.required}>*</Text>
-                    </Text>
-                    {timeSlots.map((slot) => (
-                      <TouchableOpacity
-                        key={slot.id}
-                        style={[
-                          styles.timeSlotOption,
-                          formData.selectedTime === slot.id && styles.selectedTimeSlot
-                        ]}
-                        onPress={() => setFormData(prev => ({...prev, selectedTime: slot.id, showCustomTime: false}))}
-                      >
-                        <View style={styles.timeSlotContent}>
-                          <View style={styles.timeSlotIcon}>
-                            <Ionicons name={slot.icon} size={20} color="#F59E0B" />
-                          </View>
-                          <View style={styles.timeSlotText}>
-                            <Text style={styles.timeSlotLabel}>{slot.label}</Text>
-                            <Text style={styles.timeSlotTime}>Alarm set for {slot.time}</Text>
-                          </View>
-                          <View style={[
-                            styles.radioButton,
-                            formData.selectedTime === slot.id && styles.radioButtonSelected
-                          ]}>
-                            {formData.selectedTime === slot.id && (
-                              <View style={styles.radioButtonInner} />
-                            )}
-                          </View>
-                        </View>
-                      </TouchableOpacity>
-                    ))}
-                    
-                    {/* Custom Time Option */}
-                    {formData.showCustomTime && (
-                      <View style={styles.customTimeContainer}>
-                        <Text style={styles.customTimeLabel}>Custom Time</Text>
-                        <TextInput
-                          style={styles.timeInput}
-                          placeholder="HH:MM (e.g., 14:30)"
-                          value={formData.customTime}
-                          onChangeText={(text) => setFormData(prev => ({...prev, customTime: text, selectedTime: 'custom'}))}
-                          keyboardType="numeric"
-                        />
-                      </View>
-                    )}
-                    
-                    {/* Add Custom Time Button */}
-                    <TouchableOpacity 
-                      style={styles.addCustomTimeButton}
-                      onPress={() => setFormData(prev => ({...prev, showCustomTime: !prev.showCustomTime}))}
-                    >
-                      <Ionicons name="add" size={20} color="#7C3AED" />
-                      <Text style={styles.addCustomTimeText}>
-                        {formData.showCustomTime ? 'Cancel Custom Time' : 'Add Custom Time'}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
+                 {/* When to take - Only show for single dose frequencies */}
+                 {!['twice_daily', 'three_times_daily', 'four_times_daily', 'with_meals', 'before_meals', 'at_bedtime'].includes(formData.frequency) && (
+                   <View style={styles.formGroup}>
+                     <Text style={styles.formLabel}>
+                       When do you want to take it? <Text style={styles.required}>*</Text>
+                     </Text>
+                     {timeSlots.map((slot) => (
+                       <TouchableOpacity
+                         key={slot.id}
+                         style={[
+                           styles.timeSlotOption,
+                           formData.selectedTime === slot.id && styles.selectedTimeSlot
+                         ]}
+                         onPress={() => setFormData(prev => ({...prev, selectedTime: slot.id, showCustomTime: false}))}
+                       >
+                         <View style={styles.timeSlotContent}>
+                           <View style={styles.timeSlotIcon}>
+                             <Ionicons name={slot.icon} size={20} color="#F59E0B" />
+                           </View>
+                           <View style={styles.timeSlotText}>
+                             <Text style={styles.timeSlotLabel}>{slot.label}</Text>
+                             <Text style={styles.timeSlotTime}>Alarm set for {slot.time}</Text>
+                           </View>
+                           <View style={[
+                             styles.radioButton,
+                             formData.selectedTime === slot.id && styles.radioButtonSelected
+                           ]}>
+                             {formData.selectedTime === slot.id && (
+                               <View style={styles.radioButtonInner} />
+                             )}
+                           </View>
+                         </View>
+                       </TouchableOpacity>
+                     ))}
+                     
+                     {/* Custom Time Option */}
+                     {formData.showCustomTime && (
+                       <View style={styles.customTimeContainer}>
+                         <Text style={styles.customTimeLabel}>Custom Time</Text>
+                         <TextInput
+                           style={styles.timeInput}
+                           placeholder="HH:MM (e.g., 14:30)"
+                           value={formData.customTime}
+                           onChangeText={(text) => setFormData(prev => ({...prev, customTime: text, selectedTime: 'custom'}))}
+                           keyboardType="numeric"
+                         />
+                       </View>
+                     )}
+                     
+                     {/* Add Custom Time Button */}
+                     <TouchableOpacity 
+                       style={styles.addCustomTimeButton}
+                       onPress={() => setFormData(prev => ({...prev, showCustomTime: !prev.showCustomTime}))}
+                     >
+                       <Ionicons name="add" size={20} color="#7C3AED" />
+                       <Text style={styles.addCustomTimeText}>
+                         {formData.showCustomTime ? 'Cancel Custom Time' : 'Add Custom Time'}
+                       </Text>
+                     </TouchableOpacity>
+                   </View>
+                 )}
 
-                {/* Frequency Info Display - Show what times will be scheduled */}
-                {['twice_daily', 'three_times_daily', 'four_times_daily', 'with_meals', 'before_meals', 'at_bedtime'].includes(formData.frequency) && (
-                  <View style={styles.formGroup}>
-                    <Text style={styles.formLabel}>Scheduled Times</Text>
-                    <View style={styles.scheduledTimesContainer}>
-                      {formData.frequency === 'twice_daily' && (
-                        <>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>8:00 AM - Morning dose</Text>
-                          </View>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>8:00 PM - Evening dose</Text>
-                          </View>
-                        </>
-                      )}
-                      {(formData.frequency === 'three_times_daily' || formData.frequency === 'with_meals' || formData.frequency === 'before_meals') && (
-                        <>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>8:00 AM - {formData.frequency === 'before_meals' ? 'Before' : 'With'} breakfast</Text>
-                          </View>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>1:00 PM - {formData.frequency === 'before_meals' ? 'Before' : 'With'} lunch</Text>
-                          </View>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>7:00 PM - {formData.frequency === 'before_meals' ? 'Before' : 'With'} dinner</Text>
-                          </View>
-                        </>
-                      )}
-                      {formData.frequency === 'four_times_daily' && (
-                        <>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>6:00 AM - Morning dose</Text>
-                          </View>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>12:00 PM - Noon dose</Text>
-                          </View>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>6:00 PM - Evening dose</Text>
-                          </View>
-                          <View style={styles.scheduledTime}>
-                            <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                            <Text style={styles.scheduledTimeText}>12:00 AM - Bedtime dose</Text>
-                          </View>
-                        </>
-                      )}
-                      {formData.frequency === 'at_bedtime' && (
-                        <View style={styles.scheduledTime}>
-                          <Ionicons name="time-outline" size={16} color="#7C3AED" />
-                          <Text style={styles.scheduledTimeText}>10:00 PM - Bedtime dose</Text>
-                        </View>
-                      )}
-                    </View>
-                  </View>
-                )}
+                 {/* Frequency Info Display - Show what times will be scheduled */}
+                 {['twice_daily', 'three_times_daily', 'four_times_daily', 'with_meals', 'before_meals', 'at_bedtime'].includes(formData.frequency) && (
+                   <View style={styles.formGroup}>
+                     <Text style={styles.formLabel}>Scheduled Times</Text>
+                     <View style={styles.scheduledTimesContainer}>
+                       {formData.frequency === 'twice_daily' && (
+                         <>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>8:00 AM - Morning dose</Text>
+                           </View>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>8:00 PM - Evening dose</Text>
+                           </View>
+                         </>
+                       )}
+                       {(formData.frequency === 'three_times_daily' || formData.frequency === 'with_meals' || formData.frequency === 'before_meals') && (
+                         <>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>8:00 AM - {formData.frequency === 'before_meals' ? 'Before' : 'With'} breakfast</Text>
+                           </View>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>1:00 PM - {formData.frequency === 'before_meals' ? 'Before' : 'With'} lunch</Text>
+                           </View>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>7:00 PM - {formData.frequency === 'before_meals' ? 'Before' : 'With'} dinner</Text>
+                           </View>
+                         </>
+                       )}
+                       {formData.frequency === 'four_times_daily' && (
+                         <>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>6:00 AM - Morning dose</Text>
+                           </View>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>12:00 PM - Noon dose</Text>
+                           </View>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>6:00 PM - Evening dose</Text>
+                           </View>
+                           <View style={styles.scheduledTime}>
+                             <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                             <Text style={styles.scheduledTimeText}>12:00 AM - Bedtime dose</Text>
+                           </View>
+                         </>
+                       )}
+                       {formData.frequency === 'at_bedtime' && (
+                         <View style={styles.scheduledTime}>
+                           <Ionicons name="time-outline" size={16} color="#7C3AED" />
+                           <Text style={styles.scheduledTimeText}>10:00 PM - Bedtime dose</Text>
+                         </View>
+                       )}
+                     </View>
+                   </View>
+                 )}
 
-                {/* Start Date */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Start Date</Text>
-                  <TouchableOpacity 
-                    style={styles.dateButton}
-                    onPress={() => {
-                      setShowDateDropdown(!showDateDropdown);
-                      setShowFrequencyDropdown(false); // Close other dropdown
-                    }}
-                  >
-                    <Ionicons name="calendar-outline" size={20} color="#6B7280" />
-                    <Text style={styles.dateButtonText}>
+                 {/* Start Date */}
+                 <View style={styles.formGroup}>
+                   <Text style={styles.formLabel}>Start Date</Text>
+                   <TouchableOpacity 
+                     style={styles.dateButton}
+                     onPress={() => {
+                       setShowDateDropdown(!showDateDropdown);
+                       setShowFrequencyDropdown(false); // Close other dropdown
+                     }}
+                   >
+                     <Ionicons name="calendar-outline" size={20} color="#6B7280" />
+                     <Text style={styles.dateButtonText}>
                       {selectedDate.toLocaleDateString('en-US', { 
-                        weekday: 'long', 
-                        month: 'long', 
-                        day: 'numeric' 
-                      })}
-                    </Text>
-                    <Ionicons 
-                      name={showDateDropdown ? "chevron-up" : "chevron-down"} 
-                      size={20} 
-                      color="#6B7280" 
-                    />
-                  </TouchableOpacity>
-                  
-                  {/* Date Dropdown Options */}
-                  {showDateDropdown && (
-                    <View style={styles.dropdownOptions}>
-                      {getDateOptions().map((date, index) => (
-                        <TouchableOpacity
-                          key={index}
-                          style={[
-                            styles.dropdownOption,
+                         weekday: 'long', 
+                         month: 'long', 
+                         day: 'numeric' 
+                       })}
+                     </Text>
+                     <Ionicons 
+                       name={showDateDropdown ? "chevron-up" : "chevron-down"} 
+                       size={20} 
+                       color="#6B7280" 
+                     />
+                   </TouchableOpacity>
+                   
+                   {/* Date Dropdown Options */}
+                   {showDateDropdown && (
+                     <View style={styles.dropdownOptions}>
+                       {getDateOptions().map((date, index) => (
+                         <TouchableOpacity
+                           key={index}
+                           style={[
+                             styles.dropdownOption,
                             date.toDateString() === selectedDate.toDateString() && styles.selectedDropdownOption
-                          ]}
-                          onPress={() => {
+                           ]}
+                           onPress={() => {
                             setSelectedDate(date);
-                            setShowDateDropdown(false);
-                          }}
-                        >
-                          <Text style={[
-                            styles.dropdownOptionText,
+                             setShowDateDropdown(false);
+                           }}
+                         >
+                           <Text style={[
+                             styles.dropdownOptionText,
                             date.toDateString() === selectedDate.toDateString() && styles.selectedDropdownOptionText
-                          ]}>
-                            {date.toLocaleDateString('en-US', { 
-                              weekday: 'long', 
-                              month: 'long', 
-                              day: 'numeric' 
-                            })}
-                            {index === 0 && ' (Today)'}
-                            {index === 1 && ' (Tomorrow)'}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  )}
-                </View>
+                           ]}>
+                             {date.toLocaleDateString('en-US', { 
+                               weekday: 'long', 
+                               month: 'long', 
+                               day: 'numeric' 
+                             })}
+                             {index === 0 && ' (Today)'}
+                             {index === 1 && ' (Tomorrow)'}
+                           </Text>
+                         </TouchableOpacity>
+                       ))}
+                     </View>
+                   )}
+                 </View>
 
-                {/* How often */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>How often?</Text>
-                  <TouchableOpacity 
-                    style={styles.dropdown}
-                    onPress={() => {
-                      setShowFrequencyDropdown(!showFrequencyDropdown);
-                      setShowDateDropdown(false); // Close other dropdown
-                    }}
-                  >
-                    <Text style={styles.dropdownText}>
-                      {frequencyOptions.find(opt => opt.value === formData.frequency)?.label}
-                    </Text>
-                    <Ionicons 
-                      name={showFrequencyDropdown ? "chevron-up" : "chevron-down"} 
-                      size={20} 
-                      color="#6B7280" 
-                    />
-                  </TouchableOpacity>
-                  
-                  {/* Frequency Dropdown Options */}
-                  {showFrequencyDropdown && (
-                    <View style={styles.dropdownOptions}>
-                      {frequencyOptions.map((option, index) => (
-                        <TouchableOpacity
-                          key={index}
-                          style={[
-                            styles.dropdownOption,
-                            option.value === formData.frequency && styles.selectedDropdownOption
-                          ]}
-                          onPress={() => {
-                            setFormData(prev => ({...prev, frequency: option.value}));
-                            setShowFrequencyDropdown(false);
-                          }}
-                        >
-                          <Text style={[
-                            styles.dropdownOptionText,
-                            option.value === formData.frequency && styles.selectedDropdownOptionText
-                          ]}>
-                            {option.label}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  )}
-                </View>
+                 {/* How often */}
+                 <View style={styles.formGroup}>
+                   <Text style={styles.formLabel}>How often?</Text>
+                   <TouchableOpacity 
+                     style={styles.dropdown}
+                     onPress={() => {
+                       setShowFrequencyDropdown(!showFrequencyDropdown);
+                       setShowDateDropdown(false); // Close other dropdown
+                     }}
+                   >
+                     <Text style={styles.dropdownText}>
+                       {frequencyOptions.find(opt => opt.value === formData.frequency)?.label}
+                     </Text>
+                     <Ionicons 
+                       name={showFrequencyDropdown ? "chevron-up" : "chevron-down"} 
+                       size={20} 
+                       color="#6B7280" 
+                     />
+                   </TouchableOpacity>
+                   
+                   {/* Frequency Dropdown Options */}
+                   {showFrequencyDropdown && (
+                     <View style={styles.dropdownOptions}>
+                       {frequencyOptions.map((option, index) => (
+                         <TouchableOpacity
+                           key={index}
+                           style={[
+                             styles.dropdownOption,
+                             option.value === formData.frequency && styles.selectedDropdownOption
+                           ]}
+                           onPress={() => {
+                             setFormData(prev => ({...prev, frequency: option.value}));
+                             setShowFrequencyDropdown(false);
+                           }}
+                         >
+                           <Text style={[
+                             styles.dropdownOptionText,
+                             option.value === formData.frequency && styles.selectedDropdownOptionText
+                           ]}>
+                             {option.label}
+                           </Text>
+                         </TouchableOpacity>
+                       ))}
+                     </View>
+                   )}
+                 </View>
 
-                {/* Notes */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Notes (Optional)</Text>
-                  <TextInput
-                    style={[styles.textInput, styles.notesInput]}
-                    placeholder="Any additional notes (e.g., take with food, side effects to watch for...)"
-                    value={formData.notes}
-                    onChangeText={(text) => setFormData(prev => ({...prev, notes: text}))}
-                    multiline
-                    numberOfLines={3}
-                  />
-                </View>
-              </ScrollView>
+                 {/* Notes */}
+                 <View style={styles.formGroup}>
+                   <Text style={styles.formLabel}>Notes (Optional)</Text>
+                   <TextInput
+                     style={[styles.textInput, styles.notesInput]}
+                     placeholder="Any additional notes (e.g., take with food, side effects to watch for...)"
+                     value={formData.notes}
+                     onChangeText={(text) => setFormData(prev => ({...prev, notes: text}))}
+                     multiline
+                     numberOfLines={3}
+                   />
+                 </View>
+               </ScrollView>
 
-              {/* Bottom Buttons */}
-              <View style={styles.formButtons}>
-                <TouchableOpacity 
-                  style={styles.cancelButton}
-                  onPress={() => {
-                    setShowManualForm(false);
-                    setShowDateDropdown(false);
-                    setShowFrequencyDropdown(false);
-                  }}
-                >
-                  <Text style={styles.cancelButtonText}>Back</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.submitButton}
-                  onPress={addNewMedication}
-                >
-                  <Text style={styles.submitButtonText}>Add Medication</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
+               {/* Bottom Buttons */}
+               <View style={styles.formButtons}>
+                 <TouchableOpacity 
+                   style={styles.cancelButton}
+                   onPress={() => {
+                     setShowManualForm(false);
+                     setShowDateDropdown(false);
+                     setShowFrequencyDropdown(false);
+                   }}
+                 >
+                   <Text style={styles.cancelButtonText}>Back</Text>
+                 </TouchableOpacity>
+                 <TouchableOpacity 
+                   style={styles.submitButton}
+                   onPress={addNewMedication}
+                 >
+                   <Text style={styles.submitButtonText}>Add Medication</Text>
+                 </TouchableOpacity>
+               </View>
+             </View>
+           </View>
+         </Modal>
 
-        {/* Camera Scanner Modal */}
-        <Modal
-          visible={showCameraScanner}
-          animationType="slide"
-          onRequestClose={() => setShowCameraScanner(false)}
-        >
-          <CameraScanner
-            onClose={() => setShowCameraScanner(false)}
+         {/* Camera Scanner Modal */}
+         <Modal
+           visible={showCameraScanner}
+           animationType="slide"
+           onRequestClose={() => setShowCameraScanner(false)}
+         >
+           <CameraScanner 
+             onClose={() => setShowCameraScanner(false)}
             onScanComplete={handleScanComplete}
             scanMode={scanMode}
-          />
-        </Modal>
+           />
+         </Modal>
 
         <ConfirmScheduleModal
           visible={isConfirmModalVisible}
@@ -1340,6 +1559,16 @@ export default function App() {
           medication={selectedMedication}
           onUpdate={handleUpdateMedication}
           onDelete={handleDeleteMedication}
+        />
+
+        <NotificationCenter
+          visible={showNotificationCenter}
+          onClose={() => setShowNotificationCenter(false)}
+        />
+
+        <DataManagement
+          visible={showDataManagement}
+          onClose={() => setShowDataManagement(false)}
         />
       </LinearGradient>
     </SafeAreaView>
@@ -1437,16 +1666,16 @@ const styles = StyleSheet.create({
     marginBottom: 24,
     paddingHorizontal: 4,
   },
-     dayColumn: {
-     alignItems: 'center',
-     flex: 1,
-   },
-   dayLabel: {
-     fontSize: 14,
-     color: '#6B7280',
-     fontWeight: '500',
-     marginBottom: 12,
-   },
+  dayColumn: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  dayLabel: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
+    marginBottom: 12,
+  },
    dayButtonContainer: {
      position: 'relative',
      alignItems: 'center',
@@ -1462,13 +1691,13 @@ const styles = StyleSheet.create({
      alignItems: 'center',
      justifyContent: 'center',
    },
-   dayButton: {
-     width: 44,
-     height: 44,
-     borderRadius: 22,
-     alignItems: 'center',
-     justifyContent: 'center',
-     position: 'relative',
+  dayButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
      zIndex: 1,
      transition: 'transform 0.2s',
    },

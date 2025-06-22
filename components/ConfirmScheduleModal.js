@@ -40,14 +40,45 @@ export const ConfirmScheduleModal = ({ visible, prescriptionData, onClose, onCon
   };
 
   const handleConfirm = () => {
-    // Basic validation before confirming
+    const validMedicines = [];
+    const invalidMedicines = [];
+
     for (const med of medicines) {
-      if (!med.medicineName || !med.dosage) {
-        Alert.alert('Missing Information', `Please ensure all medications have a name and dosage.`);
-        return;
+      const name = med.medicineName || med.name;
+      if (name && name.trim() !== '' && name !== 'null' && name !== 'Unknown Medication') {
+        validMedicines.push(med);
+      } else {
+        invalidMedicines.push(med);
       }
     }
-    onConfirm(medicines);
+
+    if (invalidMedicines.length > 0) {
+      Alert.alert(
+        `Found ${invalidMedicines.length} Incomplete Entries`,
+        'Some medications are missing a name. How would you like to proceed?',
+        [
+          { text: 'Go Back & Fix', style: 'cancel' },
+          {
+            text: `Add ${validMedicines.length} Valid Entries`,
+            onPress: () => {
+              if (validMedicines.length > 0) {
+                console.log('✅ Confirming only valid medications:', validMedicines.length);
+                onConfirm(validMedicines);
+              } else {
+                Alert.alert('No Valid Entries', 'There were no valid medications to add.');
+                onClose();
+              }
+            },
+          },
+        ]
+      );
+    } else if (validMedicines.length > 0) {
+      console.log('✅ All entries are valid. Confirming:', validMedicines.length);
+      onConfirm(validMedicines);
+    } else {
+      Alert.alert('No Medications', 'There are no medications to confirm.');
+      onClose();
+    }
   };
 
   // Group medicines by date for better organization
@@ -150,7 +181,9 @@ export const ConfirmScheduleModal = ({ visible, prescriptionData, onClose, onCon
 
   const renderCompactCard = (med, index) => {
     const isEditing = editingIndex === index;
-    
+    const medName = med.medicineName || med.name;
+    const isInvalid = !medName || medName.trim() === '' || medName === 'null' || medName.toLowerCase() === 'unknown medication';
+
     if (isEditing) {
       return (
         <View key={index} style={styles.editCard}>
@@ -237,52 +270,27 @@ export const ConfirmScheduleModal = ({ visible, prescriptionData, onClose, onCon
         onSwipeDelete={handleRemove}
       >
         <TouchableOpacity 
-          style={styles.compactCard}
+          style={[styles.compactCard, isInvalid && styles.invalidCard]}
           onPress={() => setEditingIndex(index)}
         >
+          {isInvalid && (
+            <View style={styles.warningIcon}>
+              <Ionicons name="alert-circle" size={24} color="#EF4444" />
+            </View>
+          )}
           <View style={styles.cardMain}>
             <View style={styles.cardHeader}>
               <View style={styles.medicineNameRow}>
                 {med.packageColor && (
                   <View style={[styles.colorIndicator, { backgroundColor: med.packageColor }]} />
                 )}
-                <Text style={styles.medicineName}>{med.medicineName || 'Unknown'}</Text>
+                <Text style={[styles.medicineName, isInvalid && styles.invalidText]}>
+                  {isInvalid ? 'Missing Name' : medName}
+                </Text>
               </View>
-              <View style={styles.cardBadges}>
-                {med.frequencyPerDay && (
-                  <View style={styles.frequencyBadge}>
-                    <Text style={styles.frequencyText}>{med.frequencyPerDay}x</Text>
-                  </View>
-                )}
-                <TouchableOpacity 
-                  style={styles.deleteIconSmall}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    handleRemove(index);
-                  }}
-                >
-                  <Ionicons name="trash-outline" size={14} color="#EF4444" />
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.editIcon}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    setEditingIndex(index);
-                  }}
-                >
-                  <Ionicons name="pencil" size={14} color="#6B7280" />
-                </TouchableOpacity>
-              </View>
+              <Text style={styles.dosage}>{med.dosage || 'No Dosage'}</Text>
             </View>
-            
-            <View style={styles.cardDetails}>
-              <Text style={styles.dosageText}>{med.dosage || 'No dosage'}</Text>
-              <Text style={styles.timesText}>{formatTimes(med.intakeTimes) || 'No times'}</Text>
-            </View>
-            
-            {med.notes && (
-              <Text style={styles.notesText} numberOfLines={2}>{med.notes}</Text>
-            )}
+            {med.notes && <Text style={styles.notes}>{med.notes}</Text>}
           </View>
         </TouchableOpacity>
       </SwipeableCard>
@@ -654,5 +662,20 @@ const styles = StyleSheet.create({
   cardContent: {
     backgroundColor: '#FFFFFF',
     borderRadius: 10,
+  },
+  invalidCard: {
+    borderColor: '#EF4444',
+    borderWidth: 2,
+    backgroundColor: '#FEF2F2',
+  },
+  invalidText: {
+    color: '#B91C1C',
+    fontWeight: 'bold',
+  },
+  warningIcon: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 10,
   },
 }); 

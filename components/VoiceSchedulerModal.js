@@ -3,7 +3,7 @@ import { Modal, View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Ale
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
-import { voiceService } from '../services/voiceService';
+import { transcribeAudioWithGoogle, scheduleFromText } from '../services/voiceService.js';
 
 export const VoiceSchedulerModal = ({ visible, onClose, onSchedule }) => {
     const [recording, setRecording] = useState(null);
@@ -70,14 +70,14 @@ export const VoiceSchedulerModal = ({ visible, onClose, onSchedule }) => {
             const encoding = Platform.OS === 'ios' ? 'LINEAR16' : 'AMR_WB';
 
             const audioBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-            const transcript = await voiceService.transcribeAudioWithGoogle(audioBase64, encoding);
+            const transcript = await transcribeAudioWithGoogle(audioBase64, encoding);
 
             if (!transcript) {
                 throw new Error("Could not understand audio. Please try speaking clearly.");
             }
             console.log("Transcript:", transcript);
             
-            const schedule = await voiceService.scheduleFromText(transcript);
+            const schedule = await scheduleFromText(transcript);
             onSchedule(schedule); // Pass the result to the App component
             onClose(); // Close this modal
 

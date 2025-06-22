@@ -110,8 +110,12 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
     // Convert to array and add calculated fields
     return Object.values(medicationGroups).map((group, index) => {
       const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
       const endDate = new Date(group.endDate);
-      const isActive = endDate >= today;
+      endDate.setHours(0, 0, 0, 0);
+
+      const status = endDate < today ? 'past' : 'active';
       
       const adherencePercentage = group.totalDays > 0 
         ? Math.round((group.completedDays / group.totalDays) * 100) 
@@ -134,7 +138,7 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
         dosage: group.dosage,
         startDate: group.startDate,
         endDate: group.endDate,
-        isActive,
+        status,
         totalDays: group.totalDays,
         completedDays: group.completedDays,
         remainingDays,
@@ -219,13 +223,13 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
             </Text>
             <View style={[
               styles.statusBadge, 
-              { backgroundColor: medication.isActive ? '#E8F5E8' : '#F5F5F5' }
+              { backgroundColor: medication.status === 'active' ? '#E8F5E8' : '#F5F5F5' }
             ]}>
               <Text style={[
                 styles.statusText,
-                { color: medication.isActive ? '#2E7D32' : '#757575' }
+                { color: medication.status === 'active' ? '#2E7D32' : '#757575' }
               ]}>
-                {medication.isActive ? 'ACTIVE' : 'PAST'}
+                {medication.status.toUpperCase()}
               </Text>
             </View>
           </View>
@@ -248,12 +252,12 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
         {/* Progress Section */}
         <View style={[styles.progressSection, { backgroundColor: colorScheme.bg }]}>
           <Text style={[styles.progressLabel, { color: colorScheme.icon }]}>
-            {medication.isActive ? 'Days Remaining' : 'Days Completed'}
+            {medication.status === 'past' ? 'Days Completed' : 'Days Remaining'}
           </Text>
           <Text style={[styles.progressValue, { color: colorScheme.icon }]}>
-            {medication.isActive 
-              ? `${medication.remainingDays}/${medication.totalDays}`
-              : `${medication.completedDays}/${medication.totalDays}`
+            {medication.status === 'past'
+              ? `${medication.completedDays}/${medication.totalDays}`
+              : `${medication.remainingDays}/${medication.totalDays}`
             }
           </Text>
           <Text style={[styles.progressUnit, { color: colorScheme.icon }]}>
@@ -266,7 +270,7 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
           <View style={styles.statItem}>
             <Text style={styles.statLabel}>Pills</Text>
             <Text style={styles.statValue}>
-              {medication.isActive ? medication.remainingPills : medication.takenPills}
+              {medication.status === 'past' ? medication.takenPills : medication.remainingPills}
               <Text style={styles.statTotal}>/{medication.totalPills}</Text>
             </Text>
           </View>
@@ -356,9 +360,7 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
         <View style={styles.subtitle}>
           <Text style={styles.subtitleText}>
             {(() => {
-              const filteredCount = processedMedications.filter(med => 
-                activeTab === 'active' ? med.isActive : !med.isActive
-              ).length;
+              const filteredCount = processedMedications.filter(med => med.status === activeTab).length;
               return `${filteredCount} ${activeTab} medication${filteredCount !== 1 ? 's' : ''}`;
             })()}
           </Text>
@@ -396,9 +398,7 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
           </TouchableOpacity>
         </View>
 
-        {processedMedications.filter(med => 
-          activeTab === 'active' ? med.isActive : !med.isActive
-        ).length === 0 ? (
+        {processedMedications.filter(med => med.status === activeTab).length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="medical-outline" size={64} color="#BDBDBD" />
             <Text style={styles.emptyTitle}>
@@ -414,7 +414,7 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
         ) : (
           <View style={styles.medicationGrid}>
             {processedMedications
-              .filter(med => activeTab === 'active' ? med.isActive : !med.isActive)
+              .filter(med => med.status === activeTab)
               .map(renderMedicationCard)}
           </View>
         )}
@@ -493,9 +493,9 @@ export const MedicationOverview = ({ onBack, medications = [], onAddClick }) => 
                     <Text style={styles.summaryLabel}>Status:</Text>
                     <Text style={[
                       styles.summaryValue,
-                      { color: selectedMedication.isActive ? '#10B981' : '#6B7280' }
+                      { color: selectedMedication.status === 'active' ? '#10B981' : '#6B7280' }
                     ]}>
-                      {selectedMedication.isActive ? 'Active' : 'Completed'}
+                      {selectedMedication.status.toUpperCase()}
                     </Text>
                   </View>
                 </View>
@@ -842,30 +842,37 @@ const styles = StyleSheet.create({
   },
   toggleContainer: {
     flexDirection: 'row',
+    justifyContent: 'space-around',
+    backgroundColor: '#F3F4F6',
+    borderRadius: 12,
+    padding: 6,
     marginHorizontal: 20,
     marginBottom: 20,
-    backgroundColor: '#F0F0F0',
-    borderRadius: 12,
-    padding: 4,
   },
   toggleButton: {
     flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   activeToggleButton: {
-    backgroundColor: '#7C3AED',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   toggleButtonText: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#666666',
   },
   activeToggleButtonText: {
-    color: '#FFFFFF',
+    color: '#374151',
   },
   bottomNav: {
     backgroundColor: '#FFFFFF',
