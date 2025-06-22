@@ -4,7 +4,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { scannerService } from '../services/scannerService';
 
-export const CameraScanner = ({ onScanComplete, onClose }) => {
+export const CameraScanner = ({ onScanComplete, onClose, scanMode }) => {
   const [permission, requestPermission] = useCameraPermissions();
   const [isLoading, setIsLoading] = useState(false);
   const cameraRef = useRef(null);
@@ -25,14 +25,20 @@ export const CameraScanner = ({ onScanComplete, onClose }) => {
           return;
         }
 
-        console.log('API key test passed, taking photo...');
+        console.log(`Starting scan with mode: ${scanMode}`);
         const photo = await cameraRef.current.takePictureAsync({
           quality: 0.7,
           base64: true,
         });
 
         console.log('Photo taken, analyzing...');
-        const result = await scannerService.recognizeMedicine(photo.base64);
+        
+        let result;
+        if (scanMode === 'prescription') {
+          result = await scannerService.recognizePrescription(photo.base64);
+        } else {
+          result = await scannerService.recognizeMedicinePackage(photo.base64);
+        }
         
         if (result) {
           console.log('Scan successful:', result);
@@ -84,6 +90,19 @@ export const CameraScanner = ({ onScanComplete, onClose }) => {
           <View style={[styles.viewfinderCorner, styles.topRight]} />
           <View style={[styles.viewfinderCorner, styles.bottomLeft]} />
           <View style={[styles.viewfinderCorner, styles.bottomRight]} />
+          
+          {/* Instruction text based on scan mode */}
+          <View style={styles.instructionContainer}>
+            <Text style={styles.instructionTitle}>
+              {scanMode === 'prescription' ? 'Prescription Scanner' : 'Package Scanner'}
+            </Text>
+            <Text style={styles.instructionText}>
+              {scanMode === 'prescription' 
+                ? 'Position the entire prescription document within the frame. Ensure all calendar sections, handwritten notes, and medication schedules are clearly visible. The AI will extract ALL medications across every day of the treatment plan.'
+                : 'Position the medication package within the frame for name and dosage detection.'
+              }
+            </Text>
+          </View>
         </View>
         
         <View style={styles.captureContainer}>
@@ -191,5 +210,27 @@ const styles = StyleSheet.create({
         backgroundColor: 'white',
         justifyContent: 'center',
         alignItems: 'center',
+      },
+      instructionContainer: {
+        position: 'absolute',
+        bottom: 20,
+        left: 20,
+        right: 20,
+        padding: 16,
+        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        borderRadius: 12,
+      },
+      instructionTitle: {
+        color: 'white',
+        fontSize: 18,
+        fontWeight: 'bold',
+        marginBottom: 8,
+        textAlign: 'center',
+      },
+      instructionText: {
+        color: 'white',
+        fontSize: 14,
+        textAlign: 'center',
+        lineHeight: 20,
       },
 }); 

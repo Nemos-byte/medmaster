@@ -3,302 +3,123 @@
  * Handles voice recording and transcription for medication input
  */
 
-import { Audio } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
-import { openAIConfig, getOpenAIHeaders, validateApiKeys } from '../config/api';
+import axios from 'axios';
 
-/**
- * Voice recording and transcription service
- */
-export class VoiceService {
-  constructor() {
-    this.recording = null;
-    this.isRecording = false;
-  }
+const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+const SPEECH_TO_TEXT_API_KEY = process.env.EXPO_PUBLIC_SPEECH_TO_TEXT_API_KEY;
 
-  /**
-   * Initialize audio permissions and settings
-   */
-  async initialize() {
-    try {
-      const { status } = await Audio.requestPermissionsAsync();
-      if (status !== 'granted') {
-        throw new Error('Audio permission not granted');
-      }
+const getGeminiPrompt = (transcript, currentDate) => {
+  const prompt = `You are an expert AI medical scheduler. Your task is to analyze the user's voice transcript, identify all medications, and structure them into a valid JSON array for scheduling.
 
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
+IMPORTANT SCHEDULING RULES:
+1. If a user says "X mg a day for Y days" or "over the next Y days", create SEPARATE entries for EACH day
+2. If a user mentions multiple medications, create separate entries for each medication
+3. Each medication entry should represent ONE medication for ONE specific day
+4. Calculate proper start and end dates based on duration
 
-      return { success: true };
-    } catch (error) {
-      console.error('Failed to initialize audio:', error);
-      return { success: false, error: error.message };
-    }
-  }
+The user's local date is ${currentDate}. 
 
-  /**
-   * Start recording audio
-   */
-  async startRecording() {
-    try {
-      if (this.isRecording) {
-        throw new Error('Already recording');
-      }
+INTAKE TIME GUIDELINES:
+- Use these preferred time slots: "morning", "afternoon", "evening", "night"
+- For "once daily": use "morning"
+- For "twice daily": use "morning,evening"
+- For "three times daily": use "morning,afternoon,evening"
+- For "four times daily": use "morning,afternoon,evening,night"
+- For specific times mentioned, use the closest time slot or keep the specific time
 
-      // Check API key
-      const validation = validateApiKeys();
-      if (!validation.hasOpenAI) {
-        throw new Error('OpenAI API key not configured');
-      }
+EXAMPLES:
+- "500mg paracetamol a day for 3 days" = 3 separate entries (one for each day)
+- "paracetamol twice daily and ibuprofen once daily for 2 days" = 4 entries total (2 for paracetamol, 2 for ibuprofen)
 
-      // Initialize if needed
-      await this.initialize();
-
-      // Start recording
-      this.recording = new Audio.Recording();
-      await this.recording.prepareToRecordAsync({
-        android: {
-          extension: '.m4a',
-          outputFormat: Audio.RECORDING_OPTION_ANDROID_OUTPUT_FORMAT_MPEG_4,
-          audioEncoder: Audio.RECORDING_OPTION_ANDROID_AUDIO_ENCODER_AAC,
-          sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
-        },
-        ios: {
-          extension: '.m4a',
-          outputFormat: Audio.RECORDING_OPTION_IOS_OUTPUT_FORMAT_MPEG4AAC,
-          audioQuality: Audio.RECORDING_OPTION_IOS_AUDIO_QUALITY_HIGH,
-          sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-      });
-
-      await this.recording.startAsync();
-      this.isRecording = true;
-
-      return { success: true };
-    } catch (error) {
-      console.error('Failed to start recording:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Stop recording and return the audio file URI
-   */
-  async stopRecording() {
-    try {
-      if (!this.isRecording || !this.recording) {
-        throw new Error('Not currently recording');
-      }
-
-      await this.recording.stopAndUnloadAsync();
-      const uri = this.recording.getURI();
-      
-      this.isRecording = false;
-      this.recording = null;
-
-      return { success: true, uri };
-    } catch (error) {
-      console.error('Failed to stop recording:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Transcribe audio file using OpenAI Whisper
-   */
-  async transcribeAudio(audioUri) {
-    try {
-      if (!audioUri) {
-        throw new Error('No audio file provided');
-      }
-
-      // Check API key
-      const validation = validateApiKeys();
-      if (!validation.hasOpenAI) {
-        throw new Error('OpenAI API key not configured. Please add your API key to the .env file.');
-      }
-
-      // Read the audio file
-      const audioInfo = await FileSystem.getInfoAsync(audioUri);
-      if (!audioInfo.exists) {
-        throw new Error('Audio file not found');
-      }
-
-      // Create FormData for the API request
-      const formData = new FormData();
-      formData.append('file', {
-        uri: audioUri,
-        type: 'audio/m4a',
-        name: 'recording.m4a',
-      });
-      formData.append('model', openAIConfig.speechToText.model);
-      formData.append('language', 'en'); // English
-      formData.append('prompt', 'This is a medication name and dosage. Please transcribe accurately.');
-
-      // Make the API request
-      const response = await fetch(openAIConfig.speechToText.url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${openAIConfig.apiKey}`,
-          'Content-Type': 'multipart/form-data',
-        },
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API Error: ${errorData.error?.message || 'Unknown error'}`);
-      }
-
-      const result = await response.json();
-      
-      // Clean up the audio file
-      await FileSystem.deleteAsync(audioUri, { idempotent: true });
-
-      return {
-        success: true,
-        transcription: result.text,
-        confidence: result.confidence || null,
-      };
-    } catch (error) {
-      console.error('Failed to transcribe audio:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Parse medication information from transcribed text using GPT
-   */
-  async parseMedicationFromText(transcription) {
-    try {
-      const validation = validateApiKeys();
-      if (!validation.hasOpenAI) {
-        throw new Error('OpenAI API key not configured');
-      }
-
-      const prompt = `Parse the following medication information and return a JSON object with these fields:
-- name: medication name
-- dosage: dosage amount (e.g., "1 tablet", "5mg", "2 capsules")
-- notes: any additional instructions
-
-Text to parse: "${transcription}"
-
-Return only valid JSON, no other text.`;
-
-      const response = await fetch(openAIConfig.textCompletion.url, {
-        method: 'POST',
-        headers: getOpenAIHeaders(),
-        body: JSON.stringify({
-          model: openAIConfig.textCompletion.model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a helpful assistant that parses medication information. Always return valid JSON.'
-            },
-            {
-              role: 'user',
-              content: prompt
-            }
-          ],
-          max_tokens: 200,
-          temperature: 0.1,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API Error: ${errorData.error?.message || 'Unknown error'}`);
-      }
-
-      const result = await response.json();
-      const parsedText = result.choices[0].message.content;
-      
-      try {
-        const medicationData = JSON.parse(parsedText);
-        return {
-          success: true,
-          medication: {
-            name: medicationData.name || '',
-            dosage: medicationData.dosage || '',
-            notes: medicationData.notes || '',
-          }
-        };
-      } catch (parseError) {
-        // Fallback: return the transcription as-is
-        return {
-          success: true,
-          medication: {
-            name: transcription,
-            dosage: '',
-            notes: 'Parsed from voice input',
-          }
-        };
-      }
-    } catch (error) {
-      console.error('Failed to parse medication:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Complete voice-to-medication workflow
-   */
-  async recordAndParseMedication() {
-    try {
-      // Start recording
-      const startResult = await this.startRecording();
-      if (!startResult.success) {
-        return startResult;
-      }
-
-      return { success: true, message: 'Recording started' };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Complete the recording and get parsed medication data
-   */
-  async completeRecordingAndParse() {
-    try {
-      // Stop recording
-      const stopResult = await this.stopRecording();
-      if (!stopResult.success) {
-        return stopResult;
-      }
-
-      // Transcribe audio
-      const transcriptionResult = await this.transcribeAudio(stopResult.uri);
-      if (!transcriptionResult.success) {
-        return transcriptionResult;
-      }
-
-      // Parse medication info
-      const parseResult = await this.parseMedicationFromText(transcriptionResult.transcription);
-      if (!parseResult.success) {
-        return parseResult;
-      }
-
-      return {
-        success: true,
-        transcription: transcriptionResult.transcription,
-        medication: parseResult.medication,
-      };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
+You MUST return a single, valid JSON array. Each object must have this structure:
+{
+  "medicineName": "string",
+  "dosage": "string", 
+  "frequencyPerDay": "number",
+  "intakeTimes": ["string"],
+  "durationDays": "number",
+  "startDate": "YYYY-MM-DD",
+  "endDate": "YYYY-MM-DD", 
+  "notes": "string"
 }
 
-// Export singleton instance
-export const voiceService = new VoiceService(); 
+For multi-day schedules:
+- Set startDate to the appropriate day for each entry
+- Set endDate to the same as startDate for each daily entry
+- Set durationDays to 1 for each daily entry
+- Use the preferred time slots for intakeTimes when possible
+
+Use null for unavailable information.
+
+User transcript: "${transcript}"`;
+  return prompt;
+};
+
+// Function to call the Speech-to-Text API
+const transcribeAudioWithGoogle = async (audioBase64, encoding) => {
+  if (!SPEECH_TO_TEXT_API_KEY) throw new Error("Speech-to-Text API key is not configured.");
+
+  const GOOGLE_STT_ENDPOINT = `https://speech.googleapis.com/v1/speech:recognize`;
+  
+  const requestBody = {
+    config: {
+      encoding: encoding,
+      sampleRateHertz: 16000,
+      languageCode: 'en-US',
+    },
+    audio: {
+      content: audioBase64,
+    },
+  };
+
+  const { data } = await axios.post(GOOGLE_STT_ENDPOINT, requestBody, {
+    params: { key: SPEECH_TO_TEXT_API_KEY }
+  });
+  
+  if (data.results && data.results.length > 0) {
+    return data.results[0].alternatives[0].transcript;
+  }
+  console.log("Google STT Response did not contain a transcript:", data);
+  return null;
+};
+
+// Function to get structured schedule from a transcript
+const scheduleFromText = async (transcript) => {
+  if (!GEMINI_API_KEY) throw new Error("API key is not configured.");
+
+  const today = new Date().toISOString().slice(0, 10);
+  const prompt = getGeminiPrompt(transcript, today);
+
+  console.log("Calling Gemini API with transcript:", transcript);
+  
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`,
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          response_mime_type: "application/json",
+        },
+      },
+      {
+        params: { key: GEMINI_API_KEY },
+      }
+    );
+
+    let resultText = response.data.candidates[0].content.parts[0].text;
+    return JSON.parse(resultText);
+    } catch (error) {
+    console.error("Gemini API Error Details:");
+    console.error("Status:", error.response?.status);
+    console.error("Status Text:", error.response?.statusText);
+    console.error("Response Data:", error.response?.data);
+    console.error("Request URL:", error.config?.url);
+    console.error("Request Params:", error.config?.params);
+    throw error;
+  }
+};
+
+export const voiceService = {
+  transcribeAudioWithGoogle,
+  scheduleFromText,
+}; 
